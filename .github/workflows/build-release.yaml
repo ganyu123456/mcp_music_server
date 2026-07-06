@@ -1,0 +1,204 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 0.1.0)"
+        required: true
+        default: "0.1.0"
+
+jobs:
+  push:
+    name: Build and push multi-arch to Harbor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/mcp-music-server:v${{ steps.version.outputs.VERSION }}
+            ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/mcp-music-server:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Export offline tarballs
+    needs: push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and export image (${{ matrix.platform }})
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          tags: mcp-music-server:v${{ steps.version.outputs.VERSION }}
+          outputs: type=docker,dest=/tmp/image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Compress image archive
+        run: |
+          PLATFORM_SUFFIX=$(echo "${{ matrix.platform }}" | tr '/' '-')
+          gzip /tmp/image.tar
+          mv /tmp/image.tar.gz "mcp-music-server_v${{ steps.version.outputs.VERSION }}_${PLATFORM_SUFFIX}.tar.gz"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.platform }}
+          path: mcp-music-server_v${{ steps.version.outputs.VERSION }}_*.tar.gz
+
+  create-release:
+    name: Create GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download all image artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: release
+
+      - name: Prepare release files
+        run: |
+          cp docker-compose.yaml release/
+          cp .env.example release/
+          cd release
+          sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ format('v{0}', steps.version.outputs.VERSION) }}
+          name: "MCP Music Server v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## MCP Music Server v${{ steps.version.outputs.VERSION }}
+
+            ### Option 1: Pull from Harbor Registry
+
+            ```bash
+            docker login ${{ secrets.HARBOR_REGISTRY }}
+            docker pull ${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/mcp-music-server:v${{ steps.version.outputs.VERSION }}
+            ```
+
+            Then edit `.env` with `MCP_IMAGE=${{ secrets.HARBOR_REGISTRY }}/${{ secrets.HARBOR_PROJECT }}/mcp-music-server:v${{ steps.version.outputs.VERSION }}` and run `docker-compose up -d`.
+
+            ### Option 2: Offline / Air-Gapped Deployment
+
+            Download the platform-specific archive:
+
+            - `mcp-music-server_v${{ steps.version.outputs.VERSION }}_linux-amd64.tar.gz`
+            - `mcp-music-server_v${{ steps.version.outputs.VERSION }}_linux-arm64.tar.gz`
+
+            ```bash
+            gunzip -c mcp-music-server_v${{ steps.version.outputs.VERSION }}_linux-amd64.tar.gz | docker load
+            MCP_IMAGE=mcp-music-server:v${{ steps.version.outputs.VERSION }} docker-compose up -d
+            ```
+
+            ### MCP Client Configuration
+
+            ```json
+            {
+              "mcpServers": {
+                "music": {
+                  "url": "http://<your-server>:8090/sse"
+                }
+              }
+            }
+            ```
+
+            ### Available MCP Tools
+            - `music_search` - Search songs across platforms
+            - `music_get_song` - Get song details
+            - `music_get_play_url` - Get playable audio URL
+            - `music_get_lyrics` - Get lyrics
+            - `music_get_playlist` - Get playlist details
+            - `music_get_hot_playlists` - Get trending playlists
+            - `music_play` / `music_stop` / `music_pause` / `music_resume` - Playback control
+            - `music_get_playback_state` - Current playback status
+            - `music_get_platform_status` - Platform availability check
+
+            ### Verify
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.VERSION, 'beta') || contains(steps.version.outputs.VERSION, 'alpha') || contains(steps.version.outputs.VERSION, 'rc') }}
+          files: |
+            release/*

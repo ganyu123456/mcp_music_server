@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  mcp-music-server:
+    image: ${MCP_IMAGE:-harbor.example.com/mcp-server/mcp-music-server:latest}
+    container_name: mcp-music-server
+    restart: unless-stopped
+
+    ports:
+      - "${MCP_PORT:-8090}:8090"
+
+    environment:
+      - MCP_MUSIC_DIR=/music
+      - MCP_ENABLED_PLATFORMS=${MCP_ENABLED_PLATFORMS:-netease,qqmusic,kugou,local}
+      - MCP_TRANSPORT=${MCP_TRANSPORT:-sse}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8090
+      - MCP_NETEASE_COOKIE=${MCP_NETEASE_COOKIE:-}
+      - MCP_QQMUSIC_COOKIE=${MCP_QQMUSIC_COOKIE:-}
+      - MCP_KUGOU_COOKIE=${MCP_KUGOU_COOKIE:-}
+
+    volumes:
+      - ${MUSIC_DIR:-~/Music}:/music:ro
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/sse')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    labels:
+      - "mcp.server.name=mcp-music-server"
+      - "mcp.server.version=${MCP_VERSION:-latest}"
+      - "mcp.server.description=Music playback and search server for LLM agents"
