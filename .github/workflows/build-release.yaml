@@ -95,16 +95,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Set platform suffix
+        id: suffix
+        run: |
+          echo "SAFE=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
       - name: Compress image archive
         run: |
-          PLATFORM_SUFFIX=$(echo "${{ matrix.platform }}" | tr '/' '-')
           gzip /tmp/image.tar
-          mv /tmp/image.tar.gz "mcp-music-server_v${{ steps.version.outputs.VERSION }}_${PLATFORM_SUFFIX}.tar.gz"
+          mv /tmp/image.tar.gz "mcp-music-server_v${{ steps.version.outputs.VERSION }}_${{ steps.suffix.outputs.SAFE }}.tar.gz"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: image-${{ matrix.platform }}
+          name: image-${{ steps.suffix.outputs.SAFE }}
           path: mcp-music-server_v${{ steps.version.outputs.VERSION }}_*.tar.gz
 
   create-release:
