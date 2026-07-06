@@ -1,6 +1,7 @@
 """QQ Music platform implementation."""
 
 import json
+import uuid
 from typing import Optional
 
 import httpx
@@ -37,6 +38,13 @@ class QQMusicPlatform(BasePlatform):
             "Referer": "https://y.qq.com/",
             "Cookie": self._cookie or "",
         }
+
+    def _parse_cookie(self, key: str) -> str:
+        """Extract a value from the cookie string by key."""
+        for part in (self._cookie or "").split("; "):
+            if part.startswith(f"{key}="):
+                return part[len(key) + 1 :]
+        return ""
 
     async def search(
         self, keyword: str, page: int = 1, limit: int = 20
@@ -140,54 +148,89 @@ class QQMusicPlatform(BasePlatform):
     async def get_play_url(
         self, song_id: str, quality: str = "standard"
     ) -> Optional[str]:
-        """Get playable URL from QQ Music."""
-        quality_map = {
-            "low": "M500",
-            "standard": "M800",
-            "high": "C400",
-            "lossless": "F000",
-        }
-        prefix = quality_map.get(quality, "M800")
+        """Get playable URL from QQ Music.
 
-        getkey_url = f"{self.BASE_URL}/v8/fcg-bin/fcg_play_single_song.fcg"
-        params = {
-            "platform": "yqq.json",
-            "format": "json",
-            "songmid": song_id,
+        Uses the modern vkey-based API: music.vkey.GetVkey / UrlGetVkey.
+        Reference: https://github.com/L-1124/QQMusicApi
+        """
+        quality_map = {
+            "low": ("M500", ".mp3"),
+            "standard": ("M500", ".mp3"),
+            "high": ("M800", ".mp3"),
+            "lossless": ("F000", ".flac"),
         }
+        prefix, suffix = quality_map.get(quality, ("M800", ".mp3"))
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
+                # Step 1: Get media_mid from song detail
+                song_url = f"{self.BASE_URL}/v8/fcg-bin/fcg_play_single_song.fcg"
                 resp = await client.get(
-                    getkey_url, params=params, headers=self._headers()
+                    song_url,
+                    params={"platform": "yqq.json", "format": "json", "songmid": song_id},
+                    headers=self._headers(),
                 )
                 resp.raise_for_status()
-                key_data = resp.json()
+                song_data = resp.json()
+
+                if song_data.get("code") != 0 or not song_data.get("data"):
+                    return None
+
+                item = song_data["data"][0]
+                media_mid = item.get("file", {}).get("media_mid", "")
+                if not media_mid:
+                    return None
+
+                # Step 2: Request vkey/purl via UrlGetVkey
+                guid = uuid.uuid4().hex
+                filename = f"{prefix}{media_mid}{suffix}"
+                uin = self._parse_cookie("uin") or "0"
+
+                payload = {
+                    "req_0": {
+                        "module": "music.vkey.GetVkey",
+                        "method": "UrlGetVkey",
+                        "param": {
+                            "uin": uin,
+                            "filename": [filename],
+                            "guid": guid,
+                            "songmid": [song_id],
+                            "songtype": [0],
+                            "ctx": 0,
+                        },
+                    }
+                }
+
+                resp2 = await client.post(
+                    f"{self.U_URL}/cgi-bin/musicu.fcg",
+                    json=payload,
+                    headers={**self._headers(), "Content-Type": "application/json"},
+                )
+                resp2.raise_for_status()
+                vkey_data = resp2.json()
+
+                # Step 3: Extract purl and construct full URL
+                midurlinfo = (
+                    vkey_data.get("req_0", {}).get("data", {}).get("midurlinfo", [])
+                )
+                if not midurlinfo:
+                    return None
+
+                info = midurlinfo[0]
+                if info.get("result", -1) != 0:
+                    return None
+
+                purl = info.get("purl", "")
+                if not purl:
+                    return None
+
+                sip_list = vkey_data.get("req_0", {}).get("data", {}).get("sip", [])
+                cdn = sip_list[0] if sip_list else "http://aqqmusic.tc.qq.com/"
+
+                return f"{cdn}{purl}"
+
         except httpx.HTTPError as e:
             raise PlatformError(self.platform_name, f"Get play URL failed: {e}")
-
-        if key_data.get("code") != 0:
-            return None
-
-        urls = key_data.get("data", [])
-        if not urls:
-            return None
-
-        url_item = urls[0]
-        vkey = url_item.get("vkey", "")
-
-        play_url = None
-        providers = [
-            f"http://isure.stream.qqmusic.qq.com/{prefix}{song_id}.mp3",
-            f"http://dl.stream.qqmusic.qq.com/{prefix}{song_id}.mp3",
-        ]
-
-        for base in providers:
-            if vkey:
-                play_url = f"{base}?vkey={vkey}&guid=0&uin=0&fromtag=66"
-                return play_url
-
-        return None
 
     async def get_lyric(self, song_id: str) -> Optional[str]:
         """Get lyrics from QQ Music."""
@@ -221,96 +264,134 @@ class QQMusicPlatform(BasePlatform):
         return lyric_text if lyric_text.strip() else None
 
     async def get_playlist(self, playlist_id: str) -> Optional[PlaylistInfo]:
-        """Get playlist detail from QQ Music."""
-        url = f"{self.U_URL}/cgi-bin/musicu.fcg"
-        payload = {
-            "comm": {"ct": 24, "cv": 0},
-            "songlist": {
-                "method": "get_songlist_detail",
-                "param": {"disstid": int(playlist_id), "onlysonglist": 0},
-                "module": "music.musichallSong.PlayListDetailServer",
-            },
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(url, json=payload, headers=self._headers())
+        """Get playlist detail from QQ Music. Supports both user playlists (dissid) and official charts (topID)."""
+        # First try user playlist API (dissid)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            try:
+                resp = await client.get(
+                    f"{self.BASE_URL}/v8/fcg-bin/fcg_v8_playlist_cp.fcg",
+                    params={"id": playlist_id, "format": "json"},
+                    headers=self._headers(),
+                )
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.HTTPError as e:
-            raise PlatformError(self.platform_name, f"Get playlist failed: {e}")
+            except httpx.HTTPError:
+                data = {}
 
-        if data.get("code") != 0:
-            return None
+            if data.get("code") == 0:
+                cdlist = data.get("data", {}).get("cdlist", [])
+                if cdlist:
+                    return self._parse_playlist_response(playlist_id, cdlist[0])
 
-        pl_data = (
-            data.get("songlist", {})
-            .get("data", {})
-            .get("songlist", {})
-        )
-        if not pl_data:
-            return None
+            # Fallback to official chart API (topID)
+            try:
+                resp = await client.get(
+                    f"{self.BASE_URL}/v8/fcg-bin/fcg_v8_toplist_opt.fcg",
+                    params={
+                        "page": "index", "format": "json", "topid": playlist_id,
+                        "cmd": 2, "song_begin": 0, "song_num": 0,
+                        "date": "", "uin": 0, "tpl": 1,
+                    },
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError:
+                return None
 
+            topinfo = data.get("topinfo", {})
+            if not topinfo:
+                return None
+
+            songs = []
+            for item in data.get("songlist", []):
+                song_data = item.get("data", item)
+                singers = ", ".join(s.get("name", "") for s in song_data.get("singer", []))
+                songs.append(SongInfo(
+                    song_id=str(song_data.get("mid", song_data.get("songmid", ""))),
+                    title=song_data.get("title", song_data.get("songname", "")),
+                    artist=singers,
+                    album=song_data.get("albumname", song_data.get("album", {}).get("title", "")),
+                    duration=song_data.get("interval", 0),
+                    cover_url=f"https://y.qq.com/music/photo_new/T002R300x300M000{song_data.get('albummid', song_data.get('album', {}).get('mid', ''))}.jpg",
+                    platform=self.platform_name,
+                ))
+
+            return PlaylistInfo(
+                playlist_id=playlist_id,
+                title=topinfo.get("ListName", ""),
+                description=topinfo.get("info", ""),
+                cover_url=topinfo.get("MacDetailPicUrl", topinfo.get("picUrl", "")),
+                song_count=len(songs),
+                songs=songs,
+                platform=self.platform_name,
+            )
+
+    def _parse_playlist_response(self, playlist_id: str, pl_data: dict) -> PlaylistInfo:
         tracks = pl_data.get("songlist", [])
         songs = []
         for item in tracks:
             singers = ", ".join(s.get("name", "") for s in item.get("singer", []))
             song = SongInfo(
-                song_id=str(item.get("mid", item.get("songmid", ""))),
-                title=item.get("title", item.get("songname", "")),
+                song_id=str(item.get("songmid", item.get("mid", ""))),
+                title=item.get("songname", item.get("title", "")),
                 artist=singers,
-                album=item.get("album", {}).get("title", item.get("albumname", "")),
+                album=item.get("albumname", item.get("album", {}).get("title", "")),
                 duration=item.get("interval", 0),
-                cover_url=f"https://y.qq.com/music/photo_new/T002R300x300M000{item.get('album', {}).get('mid', '')}.jpg",
+                cover_url=f"https://y.qq.com/music/photo_new/T002R300x300M000{item.get('albummid', item.get('album', {}).get('mid', ''))}.jpg",
                 platform=self.platform_name,
             )
             songs.append(song)
 
         return PlaylistInfo(
             playlist_id=playlist_id,
-            title=pl_data.get("title", ""),
+            title=pl_data.get("dissname", ""),
             description=pl_data.get("desc", ""),
-            cover_url=pl_data.get("dirLogo", pl_data.get("logo", "")),
-            song_count=pl_data.get("total_song_num", len(songs)),
+            cover_url=pl_data.get("logo", ""),
+            song_count=pl_data.get("songnum", len(songs)),
             songs=songs,
             platform=self.platform_name,
         )
 
     async def get_hot_playlists(self, limit: int = 20) -> list[PlaylistInfo]:
         """Get hot playlists from QQ Music."""
-        url = f"{self.BASE_URL}/v8/fcg-bin/fcg_v8_toplist_opt.fcg"
-        params = {
-            "page": "index",
-            "format": "json",
-            "topid": 4,
-            "cmd": 2,
-            "song_begin": 0,
-            "song_num": 0,
-            "date": "",
-            "uin": 0,
-            "tpl": 1,
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=self._headers())
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPError as e:
-            raise PlatformError(self.platform_name, f"Get hot playlists failed: {e}")
-
-        if data.get("code") != 0:
-            return []
-
+        top_ids = [4, 26, 27, 5, 6, 3, 16, 17, 28, 18, 19, 20, 21, 22, 23]
         playlists = []
-        top_list = data.get("toplist", [])
-        for item in top_list[:limit]:
-            playlist = PlaylistInfo(
-                playlist_id=str(item.get("topID", item.get("id", ""))),
-                title=item.get("ListName", item.get("topName", "")),
-                cover_url=item.get("FrontPicUrl", item.get("picUrl", "")),
-                platform=self.platform_name,
-            )
-            playlists.append(playlist)
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for top_id in top_ids[:limit]:
+                url = f"{self.BASE_URL}/v8/fcg-bin/fcg_v8_toplist_opt.fcg"
+                params = {
+                    "page": "index",
+                    "format": "json",
+                    "topid": top_id,
+                    "cmd": 2,
+                    "song_begin": 0,
+                    "song_num": 0,
+                    "date": "",
+                    "uin": 0,
+                    "tpl": 1,
+                }
+                try:
+                    resp = await client.get(url, params=params, headers=self._headers())
+                    resp.raise_for_status()
+                    data = resp.json()
+                except httpx.HTTPError:
+                    continue
+
+                if data.get("code", 0) != 0:
+                    continue
+
+                topinfo = data.get("topinfo", {})
+                if not topinfo:
+                    continue
+
+                playlist = PlaylistInfo(
+                    playlist_id=str(topinfo.get("topID", top_id)),
+                    title=topinfo.get("ListName", ""),
+                    cover_url=topinfo.get("MacDetailPicUrl", topinfo.get("picUrl", "")),
+                    platform=self.platform_name,
+                )
+                playlists.append(playlist)
 
         return playlists
