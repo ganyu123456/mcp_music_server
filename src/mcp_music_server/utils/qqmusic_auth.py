@@ -4,7 +4,13 @@ import json
 import logging
 from pathlib import Path
 
-from qqmusic_api import Client, Credential
+try:
+    from qqmusic_api import Client, Credential
+    _LIBRARY_AVAILABLE = True
+except ImportError:
+    _LIBRARY_AVAILABLE = False
+    Client = None  # type: ignore
+    Credential = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,9 @@ class QQMusicAuth:
 
     def load(self) -> bool:
         """Load credential from file. Returns True if loaded successfully."""
+        if not _LIBRARY_AVAILABLE:
+            logger.warning("qqmusic-api-python not installed, credential management disabled")
+            return False
         if not self._credential_path.exists():
             logger.debug("Credential file not found: %s", self._credential_path)
             return False

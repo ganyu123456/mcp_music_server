@@ -70,14 +70,14 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-amd64
           docker save \
             ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-amd64 \
-            | gzip > ${{ env.IMAGE_NAME }}-amd64.tar.gz
+            | gzip > ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-amd64.tar.gz
 
       - name: Upload amd64 artifact
         if: needs.version.outputs.is_tag == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: image-amd64
-          path: ${{ env.IMAGE_NAME }}-amd64.tar.gz
+          path: ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-amd64.tar.gz
           retention-days: 1
 
   build-arm64:
@@ -113,14 +113,14 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-arm64
           docker save \
             ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}-arm64 \
-            | gzip > ${{ env.IMAGE_NAME }}-arm64.tar.gz
+            | gzip > ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-arm64.tar.gz
 
       - name: Upload arm64 artifact
         if: needs.version.outputs.is_tag == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: image-arm64
-          path: ${{ env.IMAGE_NAME }}-arm64.tar.gz
+          path: ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-arm64.tar.gz
           retention-days: 1
 
   manifest:
@@ -185,8 +185,14 @@ jobs:
 
       - name: Prepare release files
         run: |
-          cp docker-compose.yaml release/
-          cp .env.example release/
+          V="${{ needs.version.outputs.version }}"
+          PKG="${{ env.IMAGE_NAME }}_v${V}"
+
+          mkdir -p "$PKG"
+          cp docker-compose.yaml "$PKG/"
+          cp .env.example "$PKG/.env"
+          cp scripts/qqmusic_login.py "$PKG/"
+
           cd release
           sha256sum * > checksums.txt
 
@@ -199,26 +205,40 @@ jobs:
           body: |
             ## MCP Music Server v${{ needs.version.outputs.version }}
 
-            ### 在线部署（从 Harbor 拉取）
+            ### 文件说明
 
-            ```bash
-            docker login ${{ env.REGISTRY }}
-            docker pull ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:v${{ needs.version.outputs.version }}
-            ```
-
-            编辑 `.env`：
-            ```bash
-            MCP_IMAGE=${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:v${{ needs.version.outputs.version }}
-            ```
-
-            然后运行 `docker-compose up -d`。
+            | 文件 | 说明 |
+            |------|------|
+            | `${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}/` | 运行包（docker-compose + 配置 + 登录脚本） |
+            | `${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-amd64.tar.gz` | x86_64 镜像 |
+            | `${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-arm64.tar.gz` | ARM64 镜像 |
 
             ### 离线部署
 
             ```bash
-            gunzip -c ${{ env.IMAGE_NAME }}-amd64.tar.gz | docker load
-            MCP_IMAGE=${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:v${{ needs.version.outputs.version }} docker-compose up -d
+            # 1. 加载对应架构的镜像
+            docker load -i ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}_linux-amd64.tar.gz
+
+            # 2. QQ 音乐扫码登录（只需一次）
+            pip install qqmusic-api-python
+            cd ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}
+            python qqmusic_login.py
+
+            # 3. 编辑 .env，取消注释这一行：
+            #    MCP_QQMUSIC_CREDENTIAL_PATH=/app/config/qqmusic_credential.json
+
+            # 4. 启动
+            docker compose up -d
             ```
+
+            ### 在线部署（从 Harbor 拉取）
+
+            ```bash
+            docker login ${{ env.REGISTRY }}
+            docker pull ${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
+            ```
+
+            编辑 `.env` 中 `MCP_IMAGE` 指向 Harbor 地址，然后 `docker compose up -d`。
 
             ### MCP 客户端配置
 
@@ -232,11 +252,6 @@ jobs:
             }
             ```
 
-            ### 可用 MCP 工具
-            `music_search` `music_get_song` `music_get_play_url` `music_get_lyrics`
-            `music_get_playlist` `music_get_hot_playlists` `music_play` `music_stop`
-            `music_pause` `music_resume` `music_get_playback_state` `music_get_platform_status`
-
             ### 校验
             ```bash
             sha256sum -c checksums.txt
@@ -244,3 +259,4 @@ jobs:
 
           files: |
             release/*
+            ${{ env.IMAGE_NAME }}_v${{ needs.version.outputs.version }}/*

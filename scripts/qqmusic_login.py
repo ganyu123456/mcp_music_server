@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""QQ Music QR code login — scan with QQ mobile app to get a persistent credential.
+"""QQ Music QR code login — standalone script, only depends on qqmusic-api-python.
 
 Usage:
-    python scripts/qqmusic_login.py
-    python scripts/qqmusic_login.py --output /path/to/credential.json
-
-The credential is automatically refreshed by the server when needed.
+    pip install qqmusic-api-python
+    python qqmusic_login.py
+    python qqmusic_login.py -o /path/to/credential.json
 """
 
 import argparse
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -17,8 +17,7 @@ from pathlib import Path
 from qqmusic_api import Client
 from qqmusic_api.models.login import QRCodeLoginEvents, QRLoginType
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from mcp_music_server.utils.qqmusic_auth import DEFAULT_CREDENTIAL_PATH, QQMusicAuth
+DEFAULT_CREDENTIAL_PATH = Path.home() / ".config" / "mcp-music-server" / "qqmusic_credential.json"
 
 
 async def main():
@@ -31,7 +30,7 @@ async def main():
     )
     args = parser.parse_args()
 
-    auth = QQMusicAuth(args.output)
+    output_path = Path(args.output)
     client = Client()
 
     print("Fetching QR code...")
@@ -46,7 +45,7 @@ async def main():
     print("Open the image and scan it with your QQ mobile app.")
     print("Waiting for scan", end="", flush=True)
 
-    deadline = time.time() + 300  # 5 minute timeout
+    deadline = time.time() + 300
 
     while time.time() < deadline:
         result = await client.login.check_qrcode(qr)
@@ -58,11 +57,12 @@ async def main():
                 print("\n  -> Confirmed! Authorizing...", end="", flush=True)
             case QRCodeLoginEvents.DONE:
                 cred = result.credential
-                auth.save_credential(cred)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(cred.model_dump_json(indent=2))
                 print(f"\n\nLogin successful!")
                 print(f"  musicid: {cred.musicid}")
                 print(f"  musickey: {cred.musickey[:24]}...")
-                print(f"  saved to: {auth.path}")
+                print(f"  saved to: {output_path}")
                 return 0
             case QRCodeLoginEvents.TIMEOUT:
                 print("\n\nQR code expired. Please run the script again.")

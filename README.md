@@ -10,6 +10,7 @@
 - 本地音频文件播放（MP3、FLAC、M4A、WAV、OGG 等）
 - 播放控制（播放 / 暂停 / 恢复 / 停止）
 - 两种传输模式：`stdio`（本地）和 `sse`（远程 HTTP）
+- QQ 音乐扫码登录，凭证自动续期
 
 ## 快速开始
 
@@ -42,48 +43,54 @@ git push origin v0.1.0
 GitHub Actions 将自动：
 - 构建 linux/amd64 和 linux/arm64 多架构镜像
 - 推送镜像到你的 Harbor 仓库
-- 创建 GitHub Release，附带离线镜像包和 docker-compose.yaml
+- 创建 GitHub Release，附带运行包和离线镜像
 
 ## 部署
-
-### 在线部署（从 Harbor 拉取）
-
-```bash
-# 下载 docker-compose.yaml
-wget https://github.com/<your-username>/mcp-music-server/releases/download/v0.1.0/docker-compose.yaml
-
-# 配置环境变量
-cat > .env << EOF
-MCP_IMAGE=harbor.example.com/mcp-server/mcp-music-server:v0.1.0
-MUSIC_DIR=~/Music
-MCP_PORT=8090
-MCP_TRANSPORT=sse
-EOF
-
-# 启动
-docker login harbor.example.com
-docker-compose up -d
-```
 
 ### 离线部署（无网络环境）
 
 ```bash
-# 1. 下载对应架构的离线包
-wget https://github.com/<your-username>/mcp-music-server/releases/download/v0.1.0/mcp-music-server_v0.1.0_linux-amd64.tar.gz
-wget https://github.com/<your-username>/mcp-music-server/releases/download/v0.1.0/docker-compose.yaml
+# 1. 下载 Release 中的文件：
+#    - mcp-music-server_vX.X.X/           (运行包)
+#    - mcp-music-server_vX.X.X_linux-amd64.tar.gz  (镜像，按架构选择)
+#    - mcp-music-server_vX.X.X_linux-arm64.tar.gz
 
 # 2. 加载镜像
-gunzip -c mcp-music-server_v0.1.0_linux-amd64.tar.gz | docker load
+docker load -i mcp-music-server_v0.1.0_linux-amd64.tar.gz
 
-# 3. 配置并启动
-cat > .env << EOF
-MCP_IMAGE=mcp-music-server:v0.1.0
-MUSIC_DIR=~/Music
-MCP_PORT=8090
-MCP_TRANSPORT=sse
-EOF
+# 3. 进入运行包目录
+cd mcp-music-server_v0.1.0
 
-docker-compose up -d
+# 4. QQ 音乐扫码登录（只需一次，在你装有 Python 的电脑上执行）
+pip install qqmusic-api-python
+python qqmusic_login.py
+# 生成凭证文件 → ~/.config/mcp-music-server/qqmusic_credential.json
+
+# 5. 如果服务器不是同一台机器，拷贝凭证到服务器：
+scp ~/.config/mcp-music-server/qqmusic_credential.json user@server:~/.config/mcp-music-server/
+
+# 6. 取消 docker-compose.yaml 中凭证挂载行的注释：
+#    - ~/.config/mcp-music-server/qqmusic_credential.json:/app/config/qqmusic_credential.json:ro
+#    并在 .env 中取消注释：
+#    MCP_QQMUSIC_CREDENTIAL_PATH=/app/config/qqmusic_credential.json
+
+# 7. 启动
+docker compose up -d
+```
+
+### 在线部署（从 Harbor 拉取）
+
+```bash
+# 下载运行包
+wget https://github.com/<your-username>/mcp-music-server/releases/download/v0.1.0/mcp-music-server_v0.1.0.tar.gz
+tar xzf mcp-music-server_v0.1.0.tar.gz
+cd mcp-music-server_v0.1.0
+
+# 编辑 .env，设置 Harbor 镜像地址
+# MCP_IMAGE=harbor.example.com/mcp-server/mcp-music-server:v0.1.0
+
+docker login harbor.example.com
+docker compose up -d
 ```
 
 ### 本地开发运行
@@ -96,12 +103,35 @@ pip install -e ".[sse]"
 cp .env.example .env
 vim .env
 
+# QQ 音乐扫码登录（可选，不使用则通过 Cookie 认证）
+python scripts/qqmusic_login.py
+
 # stdio 模式（本地 MCP 客户端）
 MCP_TRANSPORT=stdio python -m mcp_music_server.server
 
 # SSE 模式（远程 MCP 客户端）
 MCP_TRANSPORT=sse python -m mcp_music_server.server
 ```
+
+## QQ 音乐认证
+
+项目支持两种 QQ 音乐认证方式：
+
+| 方式 | 配置 | 有效期 | 说明 |
+|------|------|--------|------|
+| 扫码登录 | `MCP_QQMUSIC_CREDENTIAL_PATH` | 自动续期 | 推荐，首次扫码后无需再管 |
+| Cookie 手动填写 | `MCP_QQMUSIC_COOKIE` | 数小时~数天 | 从浏览器 DevTools 复制 |
+
+扫码登录步骤：
+
+```bash
+pip install qqmusic-api-python
+python scripts/qqmusic_login.py
+# 终端会保存二维码图片，用手机 QQ 扫码并确认登录
+# 凭证自动保存到 ~/.config/mcp-music-server/qqmusic_credential.json
+```
+
+服务器启动时会自动检查凭证是否过期，过期自动刷新。Cookie 方式的优先级低于凭证文件。
 
 ## MCP 客户端配置
 
@@ -144,8 +174,9 @@ MCP_TRANSPORT=sse python -m mcp_music_server.server
 | `MCP_PORT` | `8090` | SSE 模式监听端口 |
 | `MCP_MUSIC_DIR` | `~/Music` | 本地音乐文件目录 |
 | `MCP_ENABLED_PLATFORMS` | `netease,qqmusic,kugou,local` | 启用的音乐平台 |
-| `MCP_NETEASE_COOKIE` | (空) | 网易云音乐 Cookie（解锁 VIP 功能） |
-| `MCP_QQMUSIC_COOKIE` | (空) | QQ 音乐 Cookie |
+| `MCP_NETEASE_COOKIE` | (空) | 网易云音乐 Cookie |
+| `MCP_QQMUSIC_COOKIE` | (空) | QQ 音乐 Cookie（备选方案） |
+| `MCP_QQMUSIC_CREDENTIAL_PATH` | `~/.config/mcp-music-server/qqmusic_credential.json` | QQ 音乐扫码凭证路径 |
 | `MCP_KUGOU_COOKIE` | (空) | 酷狗音乐 Cookie |
 | `MCP_VERSION` | `latest` | 版本标签 |
 
@@ -171,7 +202,7 @@ MCP_TRANSPORT=sse python -m mcp_music_server.server
 ```
 搜索歌曲：music_search(keyword="晴天", platform="all", limit=10)
 获取歌词：music_get_lyrics(song_id="186016", platform="netease")
-播放歌曲：music_play(song_id="186016", platform="netease", quality="high")
+播放链接：music_get_play_url(song_id="97773", platform="qqmusic", quality="high")
 ```
 
 ## 项目结构
@@ -187,7 +218,10 @@ mcp-music-server/
 │   │   ├── kugou.py             # 酷狗音乐
 │   │   └── local.py             # 本地文件播放
 │   └── utils/
-│       └── audio.py             # 音频播放控制
+│       ├── audio.py             # 音频播放控制
+│       └── qqmusic_auth.py      # QQ 音乐凭证管理
+├── scripts/
+│   └── qqmusic_login.py         # QQ 音乐扫码登录
 ├── Dockerfile
 ├── docker-compose.yaml
 ├── .github/workflows/

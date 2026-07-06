@@ -17,10 +17,13 @@ services:
       - MCP_PORT=8090
       - MCP_NETEASE_COOKIE=${MCP_NETEASE_COOKIE:-}
       - MCP_QQMUSIC_COOKIE=${MCP_QQMUSIC_COOKIE:-}
+      - MCP_QQMUSIC_CREDENTIAL_PATH=${MCP_QQMUSIC_CREDENTIAL_PATH:-}
       - MCP_KUGOU_COOKIE=${MCP_KUGOU_COOKIE:-}
 
     volumes:
       - ${MUSIC_DIR:-~/Music}:/music:ro
+      # QQ Music credential (run "python qqmusic_login.py" on host first, then uncomment)
+      # - ~/.config/mcp-music-server/qqmusic_credential.json:/app/config/qqmusic_credential.json:ro
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/sse')"]
