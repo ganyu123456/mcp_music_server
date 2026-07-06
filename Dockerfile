@@ -19,7 +19,7 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 COPY src/ ./src/
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 
 RUN pip install --no-cache-dir -e ".[sse]"
 
