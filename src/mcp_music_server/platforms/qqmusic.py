@@ -1,6 +1,7 @@
 """QQ Music platform implementation."""
 
 import json
+import logging
 import uuid
 from typing import Optional
 
@@ -13,6 +14,9 @@ from .base import (
     SearchResult,
     SongInfo,
 )
+from ..utils.qqmusic_auth import QQMusicAuth
+
+logger = logging.getLogger(__name__)
 
 
 class QQMusicPlatform(BasePlatform):
@@ -21,9 +25,13 @@ class QQMusicPlatform(BasePlatform):
     BASE_URL = "https://c.y.qq.com"
     U_URL = "https://u.y.qq.com"
 
-    def __init__(self, cookie: str = ""):
+    def __init__(self, cookie: str = "", credential_path: str = ""):
         self._cookie = cookie
         self._available = True
+        self._auth: QQMusicAuth | None = None
+        if credential_path:
+            self._auth = QQMusicAuth(credential_path)
+            self._auth.load()
 
     @property
     def platform_name(self) -> str:
@@ -45,6 +53,16 @@ class QQMusicPlatform(BasePlatform):
             if part.startswith(f"{key}="):
                 return part[len(key) + 1 :]
         return ""
+
+    async def _ensure_cookies(self):
+        """Refresh cookie from credential manager if available."""
+        if self._auth and self._auth.is_loaded:
+            try:
+                if await self._auth.ensure_valid():
+                    cookie_dict = self._auth.get_cookies()
+                    self._cookie = "; ".join(f"{k}={v}" for k, v in cookie_dict.items() if v)
+            except Exception:
+                logger.debug("Failed to refresh QQ Music credential, using existing cookie")
 
     async def search(
         self, keyword: str, page: int = 1, limit: int = 20
@@ -103,6 +121,7 @@ class QQMusicPlatform(BasePlatform):
 
     async def get_song(self, song_id: str) -> Optional[SongInfo]:
         """Get song detail from QQ Music."""
+        await self._ensure_cookies()
         url = f"{self.U_URL}/cgi-bin/musicu.fcg"
         payload = {
             "comm": {"ct": 24, "cv": 0},
@@ -153,6 +172,7 @@ class QQMusicPlatform(BasePlatform):
         Uses the modern vkey-based API: music.vkey.GetVkey / UrlGetVkey.
         Reference: https://github.com/L-1124/QQMusicApi
         """
+        await self._ensure_cookies()
         quality_map = {
             "low": ("M500", ".mp3"),
             "standard": ("M500", ".mp3"),
@@ -234,6 +254,7 @@ class QQMusicPlatform(BasePlatform):
 
     async def get_lyric(self, song_id: str) -> Optional[str]:
         """Get lyrics from QQ Music."""
+        await self._ensure_cookies()
         url = f"{self.BASE_URL}/lyric/fcgi-bin/fcg_query_lyric_new.fcg"
         params = {
             "songmid": song_id,
@@ -265,6 +286,7 @@ class QQMusicPlatform(BasePlatform):
 
     async def get_playlist(self, playlist_id: str) -> Optional[PlaylistInfo]:
         """Get playlist detail from QQ Music. Supports both user playlists (dissid) and official charts (topID)."""
+        await self._ensure_cookies()
         # First try user playlist API (dissid)
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:

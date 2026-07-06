@@ -26,12 +26,14 @@ from .platforms.qqmusic import QQMusicPlatform
 from .platforms.kugou import KugouPlatform
 from .platforms.local import LocalPlatform
 from .utils.audio import AudioPlayer
+from .utils.qqmusic_auth import DEFAULT_CREDENTIAL_PATH
 
 load_dotenv()
 
 MUSIC_DIR = os.getenv("MCP_MUSIC_DIR", os.path.expanduser("~/Music"))
 NETEASE_COOKIE = os.getenv("MCP_NETEASE_COOKIE", "")
 QQMUSIC_COOKIE = os.getenv("MCP_QQMUSIC_COOKIE", "")
+QQMUSIC_CREDENTIAL_PATH = os.getenv("MCP_QQMUSIC_CREDENTIAL_PATH", str(DEFAULT_CREDENTIAL_PATH))
 KUGOU_COOKIE = os.getenv("MCP_KUGOU_COOKIE", "")
 ENABLED_PLATFORMS = os.getenv(
     "MCP_ENABLED_PLATFORMS", "netease,qqmusic,kugou,local"
@@ -50,7 +52,7 @@ def _init_platforms():
 
     platform_map = {
         "netease": lambda: NeteasePlatform(cookie=NETEASE_COOKIE),
-        "qqmusic": lambda: QQMusicPlatform(cookie=QQMUSIC_COOKIE),
+        "qqmusic": lambda: QQMusicPlatform(cookie=QQMUSIC_COOKIE, credential_path=QQMUSIC_CREDENTIAL_PATH),
         "kugou": lambda: KugouPlatform(cookie=KUGOU_COOKIE),
         "local": lambda: LocalPlatform(music_dir=MUSIC_DIR),
     }
