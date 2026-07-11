@@ -12,8 +12,8 @@ on:
         default: "0.1.0"
 
 env:
-  REGISTRY: ${{ secrets.HARBOR_REGISTRY }}
-  PROJECT: ${{ secrets.HARBOR_PROJECT }}
+  REGISTRY: harbor.zkjgy.online
+  PROJECT: library
   IMAGE_NAME: mcp-music-server
 
 jobs:
@@ -192,6 +192,10 @@ jobs:
           cp docker-compose.yaml "$PKG/"
           cp .env.example "$PKG/.env"
           cp scripts/qqmusic_login.py "$PKG/"
+
+          # 将发布包 .env 中的 MCP_IMAGE 取消注释并锁定到本次发布版本
+          IMAGE="${{ env.REGISTRY }}/${{ env.PROJECT }}/${{ env.IMAGE_NAME }}:${V}"
+          sed -i "s|^# MCP_IMAGE=harbor.*|MCP_IMAGE=${IMAGE}|" "$PKG/.env"
 
           cd release
           sha256sum * > checksums.txt

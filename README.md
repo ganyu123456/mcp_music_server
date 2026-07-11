@@ -27,10 +27,10 @@ cd mcp-music-server
 
 | Secret | 示例值 | 说明 |
 |--------|--------|------|
-| `HARBOR_REGISTRY` | `harbor.example.com` | Harbor 仓库地址 |
-| `HARBOR_PROJECT` | `mcp-server` | Harbor 项目名称 |
 | `HARBOR_USERNAME` | `admin` 或 `robot$mcp-builder` | Harbor 用户名 |
 | `HARBOR_PASSWORD` | `your-password-or-token` | Harbor 密码或访问令牌 |
+
+> 镜像仓库地址已固定为 `harbor.zkjgy.online/library`（写死在 workflow 中），无需再配置 `HARBOR_REGISTRY` / `HARBOR_PROJECT`。
 
 ### 3. 发布版本
 
@@ -86,10 +86,10 @@ wget https://github.com/<your-username>/mcp-music-server/releases/download/v0.1.
 tar xzf mcp-music-server_v0.1.0.tar.gz
 cd mcp-music-server_v0.1.0
 
-# 编辑 .env，设置 Harbor 镜像地址
-# MCP_IMAGE=harbor.example.com/mcp-server/mcp-music-server:v0.1.0
+# 编辑 .env，设置 Harbor 镜像地址（默认已指向 harbor.zkjgy.online/library）
+# MCP_IMAGE=harbor.zkjgy.online/library/mcp-music-server:v0.1.0
 
-docker login harbor.example.com
+docker login harbor.zkjgy.online
 docker compose up -d
 ```
 
@@ -168,7 +168,7 @@ python scripts/qqmusic_login.py
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MCP_IMAGE` | `harbor.example.com/mcp-server/mcp-music-server:latest` | Docker 镜像地址 |
+| `MCP_IMAGE` | `harbor.zkjgy.online/library/mcp-music-server:latest` | Docker 镜像地址 |
 | `MCP_TRANSPORT` | `sse` | 传输模式：`stdio` 或 `sse` |
 | `MCP_HOST` | `0.0.0.0` | SSE 模式监听地址 |
 | `MCP_PORT` | `8090` | SSE 模式监听端口 |

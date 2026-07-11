@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   mcp-music-server:
-    image: ${MCP_IMAGE:-harbor.example.com/mcp-server/mcp-music-server:latest}
+    image: ${MCP_IMAGE:-harbor.zkjgy.online/library/mcp-music-server:latest}
     container_name: mcp-music-server
     restart: unless-stopped
 
